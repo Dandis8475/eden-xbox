@@ -1,0 +1,87 @@
+name: Build Eden Xbox UWP package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out Xbox branch
+        uses: actions/checkout@v4
+        with:
+          ref: xbox
+
+      - name: Install Visual Studio UWP C++ tools
+        shell: powershell
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsRoot) { throw "Visual Studio C++ toolset not found." }
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          & $installer modify --installPath "$vsRoot" --add Microsoft.VisualStudio.ComponentGroup.UWP.VC --quiet --norestart --wait
+          if ($LASTEXITCODE -ne 0) { throw "Installing Visual Studio UWP tools failed: $LASTEXITCODE" }
+
+      - name: Install Perl and NASM
+        shell: powershell
+        run: |
+          choco install strawberryperl nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Installing Perl/NASM failed." }
+          "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Install glslangValidator
+        shell: powershell
+        run: |
+          $url = "https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip"
+          $zip = Join-Path $env:TEMP "glslang.zip"
+          $dest = "C:\glslang"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+          New-Item -ItemType Directory -Path $dest | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $exe = Get-ChildItem $dest -Recurse -Filter glslang.exe | Select-Object -First 1
+          if (-not $exe) { throw "glslang.exe was not found in the downloaded archive." }
+          Copy-Item $exe.FullName (Join-Path $exe.DirectoryName "glslangValidator.exe") -Force
+          $exe.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build Mesa SPIR-V to DXIL translator
+        shell: powershell
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File tools\xbox\build-spirv-to-dxil.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Mesa spirv_to_dxil build failed." }
+
+      - name: Configure Eden UWP
+        shell: powershell
+        run: |
+          & cmd.exe /c "tools\xbox\build-env.bat cmake --preset uwp-x64"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed." }
+
+      - name: Compile Eden UWP
+        shell: powershell
+        run: |
+          & cmd.exe /c "tools\xbox\build-env.bat cmake --build --preset uwp-x64 --target eden-uwp"
+          if ($LASTEXITCODE -ne 0) { throw "Eden UWP compilation failed." }
+
+      - name: Package and sign appx
+        shell: powershell
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File tools\xbox\package-appx.ps1 -Library
+          if ($LASTEXITCODE -ne 0) { throw "Creating the appx package failed." }
+
+      - name: Upload Xbox package files
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-xbox-appx
+          path: |
+            build-uwp/package/eden-xbox.appx
+            build-uwp/package/eden-xbox.cer
+            build-uwp/package/Microsoft.VCLibs.x64.14.00.appx
+          if-no-files-found: error
+          retention-days: 7
