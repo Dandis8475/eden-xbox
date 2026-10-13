@@ -140,7 +140,8 @@ if ($Reconfigure -or -not (Test-Path (Join-Path $build "build.ninja"))) {
 }
 
 # --- Build ----------------------------------------------------------------------------------
-& ninja -C $build src/microsoft/spirv_to_dxil/spirv_to_dxil.dll
+Write-Host "Starting Mesa Ninja build..."
+& ninja -C $build -v src/microsoft/spirv_to_dxil/spirv_to_dxil.dll
 if ($LASTEXITCODE) { throw "building spirv_to_dxil.dll failed" }
 
 # A UWP DLL may only import what the AppContainer allows: catch a stray Win32 import here rather
